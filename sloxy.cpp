@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -17,7 +18,12 @@
 #include <netdb.h>
 #include <iostream>
 
+int listeningSocket;            // socket descriptor for proxy to listen on
+const int FIXED_RANGE = 30;     // amount of bytes to increment range requests by
 
+/*
+    Model for an HTTP request, which holds other information for making range requests
+*/
 class HttpRequest {
     public:
         std::string method;
@@ -27,9 +33,15 @@ class HttpRequest {
         std::string body;
         std::map<std::string,std::string> headers;
         std::string request;
+
+        bool canSendRangeRequests;
+        std::string contentType;
         unsigned long contentLength;
         unsigned long startRange;
 
+    /*
+        Create the string form of the HTTP request with its attributes
+    */
     void createRequest() {
         request = (method + " " + url + " " + protocol + "\r\n");
         for (std::map<std::string,std::string>::iterator it = headers.begin(); it != headers.end(); ++it) {
@@ -41,15 +53,11 @@ class HttpRequest {
 
     }
 
-    void removeHeader(std::string* header) {
-        std::map<std::string,std::string>::iterator it;
-        it = headers.find(*header);
-        if (it != headers.end()) {
-            headers.erase(*header);
-        }
-    }
 };
 
+/*
+    Object to model an HTTP response
+*/
 class HttpResponse {
     public:
         std::string protocol;
@@ -59,6 +67,9 @@ class HttpResponse {
         std::map<std::string,std::string> headers;
         std::string response;
 
+    /*
+        Create the string form of the HTTP response with its attributes
+    */
     void createResponse() {
         response = (protocol + " " + statusCode + " " + statusPhrase + "\r\n");
         for (std::map<std::string,std::string>::iterator it = headers.begin(); it != headers.end(); ++it) {
@@ -71,6 +82,9 @@ class HttpResponse {
 
 };  
 
+/* 
+    Remove trailing whitespace (\r\n\s) of a string
+*/
 void trimTrailingWhitespace(char* aString) {
     int i = strlen(aString) - 1;
     while (i >= 0 && isspace(aString[i])) {
@@ -78,26 +92,11 @@ void trimTrailingWhitespace(char* aString) {
         i--;
     }
 }
-
-void trimTrailingNonPrintable(char* aString) {
-    int i = strlen(aString) - 1;
-    while (i >= 0 && !isprint(aString[i])) {
-        aString[i] = '\0';
-        i--;
-    }
-}
-
-void trimTrailingNonPrintable(std::string* aString) {
-    int i = aString->length() - 1;
-    while (i >= 0 && isprint((int)(*aString)[i]) == 0) {
-        aString->pop_back();
-        i--;
-    }
-}
-
-
+/*
+    Create listening socket and bind socket port to server.
+    @return     listening socket
+*/
 int setupListeningSocket(sockaddr_in *address) {
-    // create listening socket
     int listeningSocket;
     listeningSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (listeningSocket == -1) {
@@ -105,7 +104,6 @@ int setupListeningSocket(sockaddr_in *address) {
         exit(-1);
     }
 
-    // bind socket port to server
     int status;
     status = bind(listeningSocket, (struct sockaddr*) address, sizeof(struct sockaddr_in));
     if (status == -1) {
@@ -113,9 +111,11 @@ int setupListeningSocket(sockaddr_in *address) {
         exit(-1);
     }
     return listeningSocket;
-
 }
 
+/*
+    Send an array of characters (message) to the given socket
+*/
 void sendMessageToSocket(int socket, const char* msgToSend) {
     ssize_t c_send_status;
     c_send_status = send(socket, msgToSend, strlen(msgToSend), 0);
@@ -125,6 +125,11 @@ void sendMessageToSocket(int socket, const char* msgToSend) {
     }
 }
 
+/*
+    Create a TCP connection to server and return the socket descriptor
+
+    @return     socket descriptor to server
+*/
 int createAndConnectServerSocket(struct sockaddr_in* addr_server, struct hostent* server, ssize_t sizeOfAddrServer) {
     int server_sock;
     server_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -145,14 +150,17 @@ int createAndConnectServerSocket(struct sockaddr_in* addr_server, struct hostent
     return server_sock;     
 }
 
-
+/*
+    Add a Range header to the given HTTP request.
+*/
 void updateRangeInHeaders(HttpRequest* httpRequest) {
     if (httpRequest->startRange > httpRequest->contentLength) {
         return;
     }
+    unsigned long maxLen = httpRequest->contentLength;
 
     unsigned long startRange = httpRequest->startRange;
-    unsigned long endRange = startRange + 99;
+    unsigned long endRange = startRange + FIXED_RANGE - 1;
 
     // endRange is min(startRange + 100, content length)
     if (endRange > httpRequest->contentLength) {
@@ -165,28 +173,24 @@ void updateRangeInHeaders(HttpRequest* httpRequest) {
     range.append(std::to_string(endRange));
 
     httpRequest->headers[rangeHeader] = range;
-
-    // increase the startRange to the next 100 bytes
-    httpRequest->startRange += 100;
+    httpRequest->startRange += FIXED_RANGE;
 }
 
-void removePossible304Queries(HttpRequest* httpRequest) {
-    std::string ifModifiedSince ("If-Modified-Since");
-    httpRequest->removeHeader(&ifModifiedSince);
-    std::string ifNoneMatch ("If-None-Match");
-    httpRequest->removeHeader(&ifNoneMatch);
-}
 
+/*
+    Create the HEAD request to be sent to the server, given the information in a GET
+    HTTP request
+*/
 void createHeaderRequest(HttpRequest* httpRequest, std::string* headRequest) {
     std::string headerField = "Host";
     headRequest->append("HEAD " + httpRequest->url + " " + httpRequest->protocol + "\r\n");
     headRequest->append("Host: " + httpRequest->headers[headerField] + "\r\n");
-    headRequest->append("Connection: Keep-Alive\r\n");    
-    headRequest->append("Keep-Alive: timeout=305, max=1000\r\n");
-    headRequest->append("Cache-Control: max-age=0\r\n");
     headRequest->append("\r\n");
 }
 
+/*
+    Parse the data contained in the character buffer into an HTTP response object
+*/
 void parseResponse(HttpResponse* httpResponse, char* buffer) {
     // initialize the response
     std::string entireResponse (buffer);
@@ -196,6 +200,7 @@ void parseResponse(HttpResponse* httpResponse, char* buffer) {
     char responseCopy[1024];
     strcpy(responseCopy,response);
 
+    // store each header field and its value into the HTTP response headers map
     char* headerField = strtok(NULL, "\r\n");
     unsigned long colonPos;
     std::string headerFieldStr, header, value;
@@ -215,7 +220,6 @@ void parseResponse(HttpResponse* httpResponse, char* buffer) {
     if (remainder == NULL) {
         httpResponse->body = "";
     } else {
-        trimTrailingNonPrintable(remainder);
         httpResponse->body = remainder;
     }
 
@@ -223,33 +227,30 @@ void parseResponse(HttpResponse* httpResponse, char* buffer) {
     char* statusCode = strtok(NULL, " ");
     char* statusPhrase = strtok(NULL, "\n");
 
-    // set HTTPRequest method, url and protocol
+    // set HTTP response protocol, status code and status phrase
     httpResponse->protocol = protocol;
     httpResponse->statusCode = statusCode;
     httpResponse->statusPhrase = statusPhrase;
 
 }
 
-void getContentLengthForRequest(HttpRequest* httpRequest, int server_sock) {
-    std::string headRequest = "";
-    createHeaderRequest(httpRequest, &headRequest);
-    sendMessageToSocket(server_sock, headRequest.c_str());
 
-    char serverResponse [10000];
-
-    ssize_t bytes_rcv = recv(server_sock, &serverResponse, sizeof(serverResponse), 0);
-    if (bytes_rcv < 0) {
-        perror("Error in reqeusting HEAD from browser\n");
-        exit(-1);
-    }
-    HttpResponse httpResponse;
-    parseResponse(&httpResponse, serverResponse);
-    unsigned long contentLength = strtoul(httpResponse.headers["Content-Length"].c_str(),NULL,0);
+/*
+    Fill in the attributes for the HTTP request's content length, content type and 
+    whether it accepts ranges in the request, based on the response from the HEAD request response
+*/
+void putHeadInfoIntoRequest(HttpResponse* httpResponse, HttpRequest* httpRequest) {
+    // set the content length of the expected response
+    unsigned long contentLength = strtoul(httpResponse->headers["Content-Length"].c_str(),NULL,0);
     httpRequest->contentLength = contentLength;
     httpRequest->startRange = 0;
-
+    httpRequest->contentType = httpResponse->headers["Content-Type"].c_str();
+    httpRequest->canSendRangeRequests = httpResponse->headers["Accept-Ranges"].compare("none") != 0;
 }
 
+/*
+    Parse data in a character buffer into an HTTP request object
+*/
 void parseRequest(HttpRequest* httpRequest, char* buffer) {
     
     // make the initial request string what was in the buffer
@@ -257,6 +258,7 @@ void parseRequest(HttpRequest* httpRequest, char* buffer) {
     char requestCopy[1024];
     strcpy(requestCopy,request);
 
+    // store each header field and its value into the HTTP request headers map
     char* headerField = strtok(NULL, "\r\n");
     unsigned long colonPos;
     std::string headerFieldStr, header, value;
@@ -290,36 +292,42 @@ void parseRequest(HttpRequest* httpRequest, char* buffer) {
 
 }
 
-// Check if a request matches the GET .*\.html HTTP/.* regex
+/*
+    Check if a request matches the GET and has content type HTML
+*/
 bool matchGetHtml(HttpRequest* httpRequest) {
-    std::regex htmlRegex ("(.)*\\.html");
     std::regex httpRegex ("HTTP/\\d\\.\\d");
 
     return httpRequest->method.compare("GET") == 0 &&
-            std::regex_match(httpRequest->url,htmlRegex) &&
+            httpRequest->contentType.find("html") != std::string::npos &&
             std::regex_match(httpRequest->protocol,httpRegex);
 }
 
-void addRange(HttpRequest* httpRequest, int server_sock) {
-    // modify the request to include range ONLY if it matches the GET .*\.html HTTP/.* regex
-    if (matchGetHtml(httpRequest)) {
-        getContentLengthForRequest(httpRequest, server_sock);
-        updateRangeInHeaders(httpRequest);
-    }
-    
-}
 
+/*
+    Given a socket descriptor and a character buffer, request data from the socket
+    endpoint and store that data into the buffer
 
-void receiveData(int socket, char* rcvMsg, ssize_t sizeOfRcvMsg) {
+    @return     Number of bytes received from the socket endpoint
+*/
+ssize_t receiveData(int socket, char* rcvMsg, ssize_t sizeOfRcvMsg) {
+    // clear buffer first
+    memset(rcvMsg,0,sizeOfRcvMsg);
+
     ssize_t bytes_rcv;
     bytes_rcv = recv(socket, &(*rcvMsg), sizeOfRcvMsg, 0);
     if (bytes_rcv < 0) {
-        perror("Error in receiving\n");
+        perror("Error in receiving");
         exit(-1);
     }
+    return bytes_rcv;
 
 }
 
+/*
+    Given an 206 Partial Request HTTP response, change the header fields to make
+    it appear as a 200 OK response
+*/
 void setResponse206To200(HttpResponse* httpResponse, HttpRequest* httpRequest) {
     httpResponse->statusCode = "200";
     httpResponse->statusPhrase = "OK";
@@ -327,6 +335,12 @@ void setResponse206To200(HttpResponse* httpResponse, HttpRequest* httpRequest) {
     httpResponse->headers.erase("Content-Range");
 }
 
+
+/*
+    The proxy will listen for clients wanting to send data over the proxy's port
+    and manipulate the timing of the HTTP response from the server depending on
+    the requested resource
+*/
 void listenForClient(int listeningSocket) {
     int status;
     status = listen(listeningSocket,5); // queuelen of 5
@@ -335,10 +349,10 @@ void listenForClient(int listeningSocket) {
         perror("listen() call failed");
         exit(-1);
     }
-    // int i = 0;
-    // while (i < 4) {
 
-        /* Accept a connection */
+    while (1) {
+
+        // Accept a connection
         int client_sock;
         client_sock = accept(listeningSocket, NULL, NULL);
         if (client_sock < 0) {
@@ -346,94 +360,182 @@ void listenForClient(int listeningSocket) {
             exit(-1);
         }
 
+        printf("\n***\nAccepted a connection\n");
+
+        // zero out the buffers used to get data from client and to send data to the server
         ssize_t count;
         char rcvFromClient[1024];
-        char rcvFromServer[10000];
+        char rcvFromServer[100000];
+        memset(&rcvFromClient,0,sizeof(rcvFromClient));
+        memset(&rcvFromServer,0,sizeof(rcvFromServer));
+
 
         struct sockaddr_in addr_server;
         struct hostent *server;
 
-        /* Receive data from client */
-        receiveData(client_sock, rcvFromClient, sizeof(rcvFromClient));
+        //Receive data from client and parse the HTTP Request
+        // If for some reason, the server did not send back a message, try the whole request-response process again        
+        ssize_t bytes_rcv = receiveData(client_sock, rcvFromClient, sizeof(rcvFromClient));
+        if (bytes_rcv == 0) {
+            close(client_sock);
+            continue;
+        }
+        printf("Received %lu bytes from client\n", bytes_rcv);
+        std::cout << "\n## Message from client ##\n" << rcvFromClient << std::endl;
 
-        // Parse HTTP Request from client
         HttpRequest httpRequest;
         parseRequest(&httpRequest, rcvFromClient);
+        printf("Host: %s\n", httpRequest.headers["Host"].c_str());
+        printf("URL: %s\n", httpRequest.url.c_str());
 
-        // Creating the TCP socket for connecting to the desired web server
-        // Address initialization
-        server = gethostbyname(httpRequest.headers["Host"].c_str());
+
+        // In case the host header is supplied with the port as well, split up the host and port
+        size_t colonIndex = httpRequest.headers["Host"].find(":");
+        std::string host = httpRequest.headers["Host"];
+        int port = 80;
+        if (colonIndex != std::string::npos) {
+            size_t hostLen = host.length();
+            host = httpRequest.headers["Host"].substr(0,colonIndex-1);
+            port = stoi(httpRequest.headers["Host"].substr(colonIndex+1, hostLen - colonIndex -1));
+            printf("Host: %s \tPort: %d\n", host.c_str(), port);
+        } 
+
+        // Initialize the TCP socket for connecting to the desired web server
+        server = gethostbyname(host.c_str());
 
         bzero((char *) &addr_server, sizeof(addr_server));
         addr_server.sin_family = AF_INET;
         bcopy((char *) server->h_addr, (char *) &addr_server.sin_addr.s_addr, server->h_length);
-        addr_server.sin_port = htons(80);
+        addr_server.sin_port = htons(port);
 
         int server_sock = createAndConnectServerSocket(&addr_server, server, sizeof(addr_server));
+        printf("%s\n", "Connected to web server");
 
-        addRange(&httpRequest,server_sock);
-        removePossible304Queries(&httpRequest);
+        // Modify the HTTP request from client with details from a HEAD request
+        HttpResponse headResponse;
+        std::string headRequest = "";
+        createHeaderRequest(&httpRequest, &headRequest);
+        sendMessageToSocket(server_sock, headRequest.c_str());
 
-        server_sock = createAndConnectServerSocket(&addr_server, server, sizeof(addr_server));
-        httpRequest.createRequest(); 
+        // If for some reason, the server did not send back a message, try the whole request-response process again
+        bytes_rcv = receiveData(server_sock, rcvFromServer, sizeof(rcvFromServer));
+        if (bytes_rcv == 0) {
+            close(server_sock);
+            close(client_sock);
+            continue;
+        }
 
-        // send HTTP request to server
-        sendMessageToSocket(server_sock,httpRequest.request.c_str());
+        parseResponse(&headResponse, rcvFromServer);
+        putHeadInfoIntoRequest(&headResponse, &httpRequest);
+        printf("Content-Type: %s\n",httpRequest.contentType.c_str());
+        printf("Content-Length: %lu\n", httpRequest.contentLength);        
 
-        // Receive response from web browser
-        receiveData(server_sock, rcvFromServer, sizeof(rcvFromServer));    
-        HttpResponse httpResponse;
-        parseResponse(&httpResponse, rcvFromServer);   
-        std::cout << "************\n\nappending body\n" << httpResponse.body << "\n\n************";
+        std::string headResponseCode = headResponse.statusCode;
 
+        if (headResponseCode.compare("200") == 0) {
+            printf("Server responded with 200 OK so begin another HTTP request\n");
+            // modify the request to include range ONLY if it matches the GET .*\.html HTTP/.* regex and
+            // ONLY if it allows for range requests
+            if (matchGetHtml(&httpRequest) && httpRequest.canSendRangeRequests) {
+               updateRangeInHeaders(&httpRequest); 
+            }
 
-        // Keep asking for ranges of requests
-        HttpResponse intermediateResponse;
-
-        while (matchGetHtml(&httpRequest) && httpRequest.startRange <= httpRequest.contentLength) {
-            updateRangeInHeaders(&httpRequest);
-            // reconnect server socket after the connection closes in addRange
             server_sock = createAndConnectServerSocket(&addr_server, server, sizeof(addr_server));
-            httpRequest.createRequest();
+            httpRequest.createRequest(); 
 
-            // send HTTP request to server
             sendMessageToSocket(server_sock,httpRequest.request.c_str());
 
-            // Receive response from web browser
-            receiveData(server_sock, rcvFromServer, sizeof(rcvFromServer));    
 
-            // add to the response body
-            parseResponse(&intermediateResponse, rcvFromServer);
-            std::cout << "************\n\nappending body\n" << intermediateResponse.body << "\n\n************";
-            httpResponse.body.append(intermediateResponse.body);
+        // If for some reason, the server did not send back a message, try the whole request-response process again
+            ssize_t bytes_rcv = receiveData(server_sock, rcvFromServer, sizeof(rcvFromServer));  
+            if (bytes_rcv == 0) {
+                close(server_sock);
+                close(client_sock);
+                continue;
+            }
+            HttpResponse httpResponse;
+            parseResponse(&httpResponse, rcvFromServer);   
+            printf("Received %lu bytes from HTTP GET Request to server\n", bytes_rcv);
+
+
+            HttpResponse intermediateResponse;
+
+            // Send multiple range requests to get the rest of the full request body ONLY if it's a GET HTML request,
+            // ONLY if the server can accept range requests and ONLY if the current range is less than or equal
+            // to the content length
+            while (matchGetHtml(&httpRequest) 
+                && httpRequest.canSendRangeRequests
+                && httpRequest.startRange <= httpRequest.contentLength ) {
+                updateRangeInHeaders(&httpRequest);
+
+                // reconnect socket after the connection with server closes send HTTP request with updated range to server
+                server_sock = createAndConnectServerSocket(&addr_server, server, sizeof(addr_server));
+                httpRequest.createRequest();
+                sendMessageToSocket(server_sock,httpRequest.request.c_str());
+
+                // Receive response from web browser and add to the HTTP response body (to be sent to the client)
+                receiveData(server_sock, rcvFromServer, sizeof(rcvFromServer));    
+                parseResponse(&intermediateResponse, rcvFromServer);
+                httpResponse.body.append(intermediateResponse.body);
+            }
+
+            // If the proxy asked for multiple range requests, update the partial HTTP response to code 200 instead of 206
+            if (httpResponse.statusCode.compare("206") == 0 && httpRequest.canSendRangeRequests) {
+                setResponse206To200(&httpResponse,&httpRequest);
+                printf("%s\n", "Set 206 Partial Request --> 200 OK");
+            }
+            httpResponse.createResponse();
+
+            // Send HTTP response to client        
+            sendMessageToSocket(client_sock,httpResponse.response.c_str());
+            printf("%s\n", "Sent HTTP response back to client");
+
+        } else {
+            // Do nothing, just send back the message from the HEAD request for responses 304, 301, 302, 404
+            headResponse.createResponse();            
+            printf("\nServer responded with %s %s\n", headResponseCode.c_str(), headResponse.statusPhrase.c_str());
+            sendMessageToSocket(client_sock,headResponse.response.c_str());
         }
-        setResponse206To200(&httpResponse,&httpRequest);
-        httpResponse.createResponse();
-        printf("httpResponse is after parsing\n%s\n", httpResponse.response.c_str());
-        // Send HTTP response to client        
-        sendMessageToSocket(client_sock,httpResponse.response.c_str());
-        
+
+        // close all sockets for this transaction
         close(server_sock);
         close(client_sock);
-    // }
+        printf("%s\n***\n", "Closed all connection sockets");
+        
+   }
 }
 
-
-
+/*
+    When the user exits the program by typing CTRL-C, close the listening socket before exiting
+*/
+void my_handler(int s){
+    close(listeningSocket);
+    printf("%s\n", "closed listening socket");
+    exit(0);
+}
 
 int main() {
-    // listening on port 4545 for requests from web browser
+
+    // Set up safe exit out of program by closing all open sockets
+    struct sigaction sigIntHandler;
+
+    sigIntHandler.sa_handler = my_handler;
+    sigemptyset(&sigIntHandler.sa_mask);
+    sigIntHandler.sa_flags = 0;
+
+    sigaction(SIGINT, &sigIntHandler, NULL);
+
+    // set up the proxy address and port on which it will receive client requests
     struct sockaddr_in address;
     memset(&address,0,sizeof(address));
     address.sin_family = AF_INET;
     address.sin_port = htons(4545);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    int listeningSocket;
+    // start listening for client connections
     listeningSocket = setupListeningSocket(&address);
     listenForClient(listeningSocket);
 
-    close(listeningSocket);
     return 0;
 }
 
