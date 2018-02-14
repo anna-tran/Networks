@@ -19,7 +19,7 @@
 #include <iostream>
 
 int listeningSocket;            // socket descriptor for proxy to listen on
-const int FIXED_RANGE = 30;     // amount of bytes to increment range requests by
+const int FIXED_RANGE = 72;     // amount of bytes to increment range requests by
 
 /*
     Model for an HTTP request, which holds other information for making range requests
@@ -529,7 +529,7 @@ int main() {
     struct sockaddr_in address;
     memset(&address,0,sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_port = htons(4545);
+    address.sin_port = htons(4546);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
 
     // start listening for client connections
