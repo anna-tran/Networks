@@ -116,6 +116,30 @@ int recv_udp_msg(int a_socket, char* buf, size_t buf_len, struct sockaddr *addr,
     return read_bytes;
 }
 
+int get_highest_seqnum(unsigned char ack) {
+    int seqnum = 0;
+    while (ack & (1 << (seqnum))) {
+        seqnum++;
+    }
+    if (seqnum == 0) {
+    	return seqnum;
+    } else {
+    	return seqnum-1;
+    }
+}
+
+void print_ack(unsigned char ack) {
+    char ack_str[9];
+    memset(ack_str,0,9);
+    for (int i = 0; i < 8; i++) {
+        if (ack & (1 << i)) {
+            ack_str[i] = '1';
+        } else {
+            ack_str[i] = '0';
+        }
+    }
+    printf("ack is %s", ack_str);
+}
 // void set_socket_timeout(int a_socket) {
 // 	struct timeval timeout;
 // 	timeout.tv_sec = 1;
@@ -180,19 +204,14 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
 	recv_args.client = client;
 	recv_args.size_of_client = len;
 	recv_args.bytes_recv = &bytes_recv;
-	int max_retries = 30;
 
-	int retries = 0;
-	while (timed_out && retries < max_retries) {
+	while (timed_out){
 		timed_out = false;
 
 		pthread_t thread1;
 		check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timed_out), a_socket);
 
-		
-
 		bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
-
 
 		pthread_t thread2;
 		check_pthread_ok(pthread_create(&thread2, NULL, pthread_recv_bytes, (void*) &recv_args), a_socket);
@@ -212,12 +231,11 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
         // kill receiving process and try again
         if (timed_out) {
         	pthread_cancel(thread2);
-        	retries++;
         }
 
 		
 	}
-	printf("bytes_sent on concurrent send: %d\n", bytes_sent);
+	//printf("bytes_sent on concurrent send: %d\n", bytes_sent);
 	return bytes_sent;
 }
 

@@ -24,13 +24,9 @@ int get_seqnum(unsigned char identifier) {
     return seqnum;
 }
 
-char get_highest_bit(unsigned char ack) {
-    char seqnum = 0;
-    while (ack & (1 << (seqnum+1))) {
-        seqnum++;
-    }
-    return 1 << seqnum;
-}
+
+
+
 
 void recv_octolegs(FILE* file, char* octoblock, int octoleg_len, int a_socket, struct sockaddr *server, unsigned int len) {
     int bytes_sent = 0;
@@ -47,6 +43,7 @@ void recv_octolegs(FILE* file, char* octoblock, int octoleg_len, int a_socket, s
     while ((ack & 0xFF) != 0xFF) {
         // wait for server response
         memset (&buf,0,sizeof(buf));
+        
         bytes_recv = recv_udp_msg(a_socket, buf, sizeof(buf), server, len);
         //printf("bytes_recv = %d\n", bytes_recv);
 
@@ -61,20 +58,22 @@ void recv_octolegs(FILE* file, char* octoblock, int octoleg_len, int a_socket, s
         }
 
         // send cumulative ACK         
-        char highest_bit = get_highest_bit(ack);
-        printf("sending seqnum %u\n", (unsigned char)highest_bit);
-        bytes_sent = send_udp_msg(a_socket, &highest_bit, 1, server, len);
+        int highest_seqnum = get_highest_seqnum(ack);
+        printf("sending highest_seqnum  %d   ", highest_seqnum);
+        print_ack(ack);
+        printf("\n");
+        char highest_seqnum_ack = 1 << highest_seqnum;
+        bytes_sent = send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
   
     }
 
-    printf("about to memcpy\n");
     // assemble octolegs into octoblock
     memcpy(octoblock, &(octolegs[0][1]), octoleg_len);
     for (int i = 1; i < OCTO_SIZE; i++) {
         char* next_location = octoblock + (i * octoleg_len);
         memcpy(next_location, &(octolegs[i][1]), octoleg_len);
     }
-    printf("finished memcpy\n");
+    //printf("finished memcpy\n");
 
 }
 
@@ -85,11 +84,11 @@ void send_start_ack(int a_socket, struct sockaddr *server, unsigned int len, int
     char start_ack = 1;
     char server_ack[octoleg_len];
 
-    printf("size of server_ack %ld\n", sizeof(server_ack));
+    //printf("size of server_ack %ld\n", sizeof(server_ack));
     do_concurrent_send(&start_ack, sizeof(start_ack), 
                         server_ack, sizeof(server_ack),
                         a_socket, server, len);
-    printf("finsihed start ack\n");
+    //printf("finsihed start ack\n");
 }
 
 void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *server, unsigned int len) {
@@ -110,7 +109,7 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
             memset(octoblock,0,sizeof(octoblock));
             recv_octolegs(file, octoblock, octoleg_len, a_socket, server, len);
 
-            printf("size of octoblock: %ld\n", sizeof(octoblock));
+            //printf("size of octoblock: %ld\n", sizeof(octoblock));
             bytes_written = fwrite(octoblock,sizeof(char),sizeof(octoblock),file);
             printf("bytes_written = %d\n", bytes_written);
             fflush(file);
@@ -125,7 +124,7 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
     }
 
     // send the remaining bytes in a padded buffer of 8 bytes
-    
+    octoleg_len = sizeof(char);
     if (bytes_to_write > 0) {
         printf("leftover bytes to write: %ld\n", bytes_to_write);
         char octoblock[8];
