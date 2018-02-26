@@ -46,6 +46,8 @@ void recv_octolegs(FILE* file, char* octoblock, int octoleg_len, int a_socket, s
         
         bytes_recv = recv_udp_msg(a_socket, buf, sizeof(buf), server, len);
         //printf("bytes_recv = %d\n", bytes_recv);
+        if ((rand() % 100) < 10)
+            continue;
 
         char identifier = buf[0];
         int seqnum = get_seqnum(identifier);

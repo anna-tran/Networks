@@ -231,6 +231,7 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
         // kill receiving process and try again
         if (timed_out) {
         	pthread_cancel(thread2);
+        	printf("resending octoleg\n");
         }
 
 		
