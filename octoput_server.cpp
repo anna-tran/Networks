@@ -1,5 +1,6 @@
 /*
 	Version 1.0
+	Working on localhost to transfer sequential octolegs
 */
 #include <ctime>
 #include "octohelper.h"
@@ -8,16 +9,16 @@ int server_socket;
 FILE* file;
 
 
-void send_error_to_client(char* buf, int server_socket) {
+void send_error_to_client(int server_socket, char* buf) {
 	char file_err[80];
 	strcat(file_err,"Could not open file ");
 	strcat(file_err,buf);	
 	printf("%s\n", buf);
 		
-	send_tcp_msg(a_socket,file_err);		
+	send_tcp_msg(server_socket,file_err);		
 }
 
-void set_port_and_family(struct sockaddr_in* addr) {
+void set_port_family_addr(struct sockaddr_in* addr) {
 	memset ((char*) &(*addr),0,sizeof((*addr)));
 	addr->sin_family = AF_INET;
 	addr->sin_port = htons(SERVER_PORT);	
@@ -33,81 +34,99 @@ long get_file_size(FILE* file) {
 	return file_size;
 }
 
+void update_ack(unsigned char* ack, unsigned char higest_client_seq) {
+	while (higest_client_seq != 0) {
+		(*ack) = (*ack) | higest_client_seq;
+		higest_client_seq >>= 1;
+	}
+}
+
+
 int send_octolegs(FILE* file, int a_socket, int octoleg_len, int num_reads, struct sockaddr *client, unsigned int len) {
-	int bytes_sent, bytes_recv;
 
 	// add another bit to contain the sequence number
-	char octolegs[OCTO_SIZE][octoleg_len+1];
-	for (int i = 0; i < num_reads; i++) {
+	char octolegs[8][octoleg_len+1];
+
+	for (int i = 0; i < 8; i++) {
 		// first byte of buf is seqnum
-		// read in data from file into remaining bytes
 		memset(octolegs[i],0,sizeof(octolegs[i]));	
 		octolegs[i][0] = 1 << i;
-		fread(&(octolegs[i][1]),sizeof(char),octoleg_len,file);
-
+		if (i < num_reads) {
+			fread(&(octolegs[i][1]),sizeof(char),octoleg_len,file);			
+		}
 	}
-	char ack;
 	// TODO later: send Octolegs in different order
 	// send octolegs in order of seqnum
 	int total_bytes_sent = 0;
-	// while (ack && 0xFF != 0xFF)
-	for (int i = 0; i < OCTO_SIZE; i++) {
-		bytes_recv = 0;
-		char temp_ack;
-		while(bytes_recv <= 0 || errno != 0) {
-			errno = 0;
-			bytes_sent = send_udp_msg(a_socket, octolegs[i], sizeof(octolegs[i]), client, len);
-			printf("sent %d bytes\n", bytes_sent);
-			
-			//TODO: use ACK response to determine next octoleg to send
-			bytes_recv = recv_udp_msg(a_socket, &temp_ack, 1, client, len);
-			printf("recv %d bytes\n", bytes_recv);
+	struct sockaddr_in* ip_client;
+	ip_client = (struct sockaddr_in*) client;
+	int bytes_sent, bytes_recv;
 
-		}
-		printf("bytes recv: %d\n", bytes_recv);
-		ack = ack | temp_ack;
-		total_bytes_sent += bytes_sent;
+
+	unsigned char ack = 0;
+	unsigned char finished_ack = 1 << 7;
+	int i = rand() % 8;
+	while (ack != finished_ack) {
+		printf("sending seqnum %d\n", i);
+		bytes_recv = 0;
+		char higest_client_seq;		// highest seqnum received on client side
+
+		bytes_sent = do_concurrent_send(octolegs[i], sizeof(octolegs[i]), &higest_client_seq, sizeof(higest_client_seq), a_socket, client, len);
+		ack = (unsigned char) higest_client_seq;
+		printf("highest sent bit %u\n", ack);
+
+		i = rand() % 8;
+
 	}
 
-	return total_bytes_sent;
+
+	return (bytes_sent-1)*8;
 }
 
-void send_octoblocks(FILE* file, long bytes_to_read, char* buf,int a_socket, struct sockaddr *client, unsigned int len) {
+void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct sockaddr *client, unsigned int len) {
 	int bytes_sent, bytes_recv;
-	int octoleg_len = MAX_OCTOBLOCK_LEN;
+	int octoblock_len = MAX_OCTOBLOCK_LEN;
+	int octoleg_len = octoblock_len / 8;
+	long bytes_to_read = file_size;
+
+
 	// make sure the size of the octoleg is at least 8 bytes
 	while (octoleg_len >= MIN_LEG_BYTE) {
+        printf("octoleg_len: %d\n", octoleg_len);
 
 		// keep sending octolegs until remaining bytes of file to send are less than octoleg
-		while (bytes_to_read > octoleg_len) {
-			// TODO: create list of Octolegs
-			bytes_sent = send_octolegs(file, a_socket, octoleg_len, OCTO_SIZE, client, len);
+		while (bytes_to_read >= octoblock_len) {
+			bytes_sent = send_octolegs(file, a_socket, octoleg_len, 8, client, len);
+			printf("bytes_sent = %d\n", bytes_sent);
 
 			// decrease bytes_to_read by how many bytes were sent
-			printf("sent %d bytes\n", bytes_sent);
-			bytes_to_read -= bytes_sent;			
+			bytes_to_read = bytes_to_read - bytes_sent;	
+			printf("bytes to read = %ld\n", bytes_to_read);
+
 		}
 
+
 		// octoleg size becomes 1/8 of the remaining file bytes
-		octoleg_len = bytes_to_read / OCTO_SIZE;
+		octoblock_len = bytes_to_read;
+		octoleg_len = (octoblock_len / 8);
 	}
 
 	// send the remaining bytes in a padded buffer of 8 bytes
-	
-	if (bytes_to_read > 0) {
-		bytes_sent = send_octolegs(file, a_socket, sizeof(char), bytes_to_read, client, len);
-		printf("sent %d bytes\n", bytes_sent);
+	octoleg_len = sizeof(char);
+	if (bytes_to_read > 0) {	
+		printf("leftover bytes to read: %ld\n", bytes_to_read);		
+		bytes_sent = send_octolegs(file, a_socket, octoleg_len, bytes_to_read, client, len);
 
 	}
 	
 }
 
 void wait_for_client(int a_socket, struct sockaddr *client, unsigned int len) {
-	char ack;
-	int bytes_sent;
-	recv_udp_msg(a_socket, &ack, 1, client, len);
-	bytes_sent = send_udp_msg(a_socket, &ack, 1, client, len);
-	
+	char ack = 0;
+	int bytes_sent = 0;
+	int bytes_recv;
+	bytes_recv = recv_udp_msg(a_socket, &ack, 1, client, len);
+
 }
 
 
@@ -137,7 +156,7 @@ int main(int argc, char* argv[]){
 	char buf[MAX_OCTOBLOCK_LEN];
 
 	// setup server socket
-	set_port_and_family(&ip_server);
+	set_port_family_addr(&ip_server);
 
 	server = (struct sockaddr*) &ip_server;
 	client = (struct sockaddr*) &ip_client;
@@ -174,7 +193,7 @@ int main(int argc, char* argv[]){
 	// open file if existing, else return an error message
 	file = fopen(buf,"rb");
 	if (file == NULL) {
-		send_error_to_client(buf, server_socket);
+		send_error_to_client(server_socket, buf);
 		close(server_socket);
 		return 0;
 	}
@@ -192,16 +211,27 @@ int main(int argc, char* argv[]){
 	// close TCP socket and open UDP socket
 	close(server_socket);
 
+
+
+
+
+
+
+
+
+
 	// setup server socket
+    struct sockaddr_in server_address;
+    memset(&server_address, 0, sizeof(server_address));
+    set_port_family_addr(&server_address);
+
 	server_socket = setup_udp_socket();
-	bind_socket(server_socket,&ip_server);
+	bind_socket(server_socket,&server_address);
 
 	wait_for_client(server_socket,client,len);
-	printf("server %s on port %d\n", inet_ntoa(ip_server.sin_addr), ntohs(ip_server.sin_port));		
+	printf("server %s on port %d\n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));		
 	printf("client %s on port %d\n", inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
 
-	// set timeout for socket
-	set_socket_timeout(server_socket);
 	// send octoblocks
 	send_octoblocks(file, file_size, buf, server_socket, client, len);
 	
