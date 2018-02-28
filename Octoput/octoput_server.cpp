@@ -1,6 +1,10 @@
 /*
 	Version 1.2
 	Able to send out of order, retransmission and lost messages successfully
+
+	Author: Anna Tran
+	Affiliation: University of Calgary
+	Student ID: 10128425
 */
 #include <ctime>
 #include "octohelper.h"

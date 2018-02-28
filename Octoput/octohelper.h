@@ -1,3 +1,14 @@
+/*
+    Version 1.2
+    Able to send out of order, retransmission and lost messages successfully
+    Client has timed wait at end of file transfer in case last ACK to server wasn't sent successfully
+
+    Author: Anna Tran
+    Affiliation: University of Calgary
+    Student ID: 10128425
+*/
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
