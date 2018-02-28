@@ -19,14 +19,16 @@
 #include <set>
 #include <algorithm>
 #include <iterator>
+#include <errno.h>
 
 
 
 #define SERVER_PORT 4545
 #define MAX_OCTOBLOCK_LEN 8888
-#define OCTO_SIZE 8
 #define MIN_LEG_BYTE 8
 #define TIMEOUT 1
+#define OCTOBLOCK_MAX_SEQNUM 3
+#define TIMED_WAIT 10
 
 struct pthread_recv_args {
 	char* recv_buf;
@@ -38,6 +40,11 @@ struct pthread_recv_args {
 	unsigned int size_of_client;
 
 	int* bytes_recv;
+};
+
+struct pthread_timeout_args {
+    int timeout_len;
+    bool* timed_out;
 };
 
 int setup_tcp_socket() {
@@ -110,6 +117,7 @@ int recv_udp_msg(int a_socket, char* buf, size_t buf_len, struct sockaddr *addr,
     int read_bytes = recvfrom(a_socket, buf, buf_len, 0, addr, &len);
     if (read_bytes < 0) {
         perror("Recv error");
+        printf("$d\n",errno);
         close(a_socket);        
         exit(-1);
     } 	
@@ -140,33 +148,7 @@ void print_ack(unsigned char ack) {
     }
     printf("ack is %s", ack_str);
 }
-// void set_socket_timeout(int a_socket) {
-// 	struct timeval timeout;
-// 	timeout.tv_sec = 1;
-// 	timeout.tv_usec = 0;
-// 	int status = setsockopt(a_socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
-// 	if (status < 0) {
-// 		perror("Could not set timeout for socket");
-// 		close(a_socket);		
-// 		exit(-1);
-// 	}
-// }
 
-// void disable_socket_timeout(int a_socket) {
-// 	int opts = fcntl(a_socket,F_GETFL);
-//     if (opts < 0) {
-//         perror("Could not get socket options");
-//         close(a_socket);
-//         exit(-1);
-//     }	
-//     opts = opts & (~O_NONBLOCK);
-// 	int status = fcntl(a_socket,F_SETFL,opts);
-// 	if (status < 0) {
-// 		perror("Could not disable socket timeout");
-// 		close(a_socket);		
-// 		exit(-1);
-// 	}
-// }
 
 void check_pthread_ok(int pthread_result, int a_socket) {
 	if (pthread_result) {
@@ -176,20 +158,19 @@ void check_pthread_ok(int pthread_result, int a_socket) {
 	}
 }
 
-void* pthread_wait_timeout(void *void_timed_out) {
-	bool* timed_out = (bool*) void_timed_out;
-	sleep(TIMEOUT);
-	//printf("child1 timed_out\n");
-	*timed_out = true;
+void* pthread_wait_timeout(void *void_timeout_args) {
+    struct pthread_timeout_args* timeout_args = (struct pthread_timeout_args*) void_timeout_args;
+	sleep(timeout_args->timeout_len);
+	*(timeout_args->timed_out) = true;
     pthread_exit(0);
 }
 
 void* pthread_recv_bytes(void* void_recv_args) {
 	struct pthread_recv_args* args = (struct pthread_recv_args*) void_recv_args;
-	//printf("child2 waiting for message\n");
 	*(args->bytes_recv) = recv_udp_msg(args->a_socket, args->recv_buf, args->size_of_recv, args->client, args->size_of_client);
 	pthread_exit(0);
 }
+
 
 int do_concurrent_send(char* send_buf, size_t size_of_send, 
 						char* recv_buf, size_t size_of_recv,
@@ -197,6 +178,10 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
 	int bytes_sent = 0;
 	int bytes_recv = 0;
 	bool timed_out = true;
+
+    struct pthread_timeout_args timeout_args;
+    timeout_args.timeout_len = TIMEOUT;
+    timeout_args.timed_out = &timed_out;
 	struct pthread_recv_args recv_args;
 	recv_args.recv_buf = recv_buf;
 	recv_args.size_of_recv = size_of_recv;
@@ -205,18 +190,17 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
 	recv_args.size_of_client = len;
 	recv_args.bytes_recv = &bytes_recv;
 
+
 	while (timed_out){
 		timed_out = false;
 
 		pthread_t thread1;
-		check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timed_out), a_socket);
+		check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timeout_args), a_socket);
 
 		bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
 
 		pthread_t thread2;
 		check_pthread_ok(pthread_create(&thread2, NULL, pthread_recv_bytes, (void*) &recv_args), a_socket);
-
-		
 
         // parent process
         while (!timed_out) {
@@ -240,4 +224,44 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
 	return bytes_sent;
 }
 
+void do_timed_wait(char* send_buf, size_t size_of_send, 
+                    char* recv_buf, size_t size_of_recv,
+                    int a_socket, struct sockaddr *client, unsigned int len) {
+    int bytes_sent = 0;
+    int bytes_recv = 0;
+    bool timed_out = false;
+
+    struct pthread_timeout_args timeout_args;
+    timeout_args.timeout_len = TIMED_WAIT;              // wait 30s before exiting read call
+    timeout_args.timed_out = &timed_out;
+    struct pthread_recv_args recv_args;
+    recv_args.recv_buf = recv_buf;
+    recv_args.size_of_recv = size_of_recv;
+    recv_args.a_socket = a_socket;
+    recv_args.client = client;
+    recv_args.size_of_client = len;
+    recv_args.bytes_recv = &bytes_recv;
+
+    while (!timed_out) {
+        pthread_t thread1;
+        check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timeout_args), a_socket);
+
+        pthread_t thread2;
+        check_pthread_ok(pthread_create(&thread2, NULL, pthread_recv_bytes, (void*) &recv_args), a_socket);
+        while (!timed_out) {
+            
+            // if received something, kill the timer process
+            if (bytes_recv > 0) {
+                bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
+                pthread_cancel(thread1);
+                break;
+            }
+        }
+        pthread_cancel(thread2);
+        
+    }    
+
+
+
+}
 

@@ -1,6 +1,6 @@
 /*
-	Version 1.0
-	Working on localhost to transfer sequential octolegs
+	Version 1.2
+	Able to send out of order, retransmission and lost messages successfully
 */
 #include <ctime>
 #include "octohelper.h"
@@ -42,17 +42,18 @@ void update_ack(unsigned char* ack, unsigned char higest_client_seq) {
 }
 
 
-int send_octolegs(FILE* file, int a_socket, int octoleg_len, int num_reads, struct sockaddr *client, unsigned int len) {
+int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_reads, int a_socket, struct sockaddr *client, unsigned int len) {
 
 	// add another bit to contain the sequence number
-	char octolegs[8][octoleg_len+1];
+	char octolegs[8][octoleg_len+2];
 
 	for (int i = 0; i < 8; i++) {
 		// first byte of buf is seqnum
 		memset(octolegs[i],' ',sizeof(octolegs[i]));	
-		octolegs[i][0] = 1 << i;
+		octolegs[i][0] = octoblock_seqnum;
+		octolegs[i][1] = 1 << i;
 		if (i < num_reads) {
-			fread(&(octolegs[i][1]),sizeof(char),octoleg_len,file);			
+			fread(&(octolegs[i][2]),sizeof(char),octoleg_len,file);			
 		}
 	}
 	// TODO later: send Octolegs in different order
@@ -65,7 +66,7 @@ int send_octolegs(FILE* file, int a_socket, int octoleg_len, int num_reads, stru
 
 	unsigned char ack = 0;
 	unsigned char finished_ack = 1 << 7;
-	//int i = 0;
+
 	int i = rand() % 8;
 	while (ack != finished_ack) {
 		printf("sending seqnum %d\n", i);
@@ -74,8 +75,6 @@ int send_octolegs(FILE* file, int a_socket, int octoleg_len, int num_reads, stru
 
 		bytes_sent = do_concurrent_send(octolegs[i], sizeof(octolegs[i]), &higest_client_seq, sizeof(higest_client_seq), a_socket, client, len);
 		ack = (unsigned char) higest_client_seq;
-		print_ack(ack);
-		printf("\n");
 
 		i = rand() % 8;
 		//i++;
@@ -83,7 +82,7 @@ int send_octolegs(FILE* file, int a_socket, int octoleg_len, int num_reads, stru
 	}
 
 
-	return (bytes_sent-1)*8;
+	return (bytes_sent-2)*8;
 }
 
 void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct sockaddr *client, unsigned int len) {
@@ -92,20 +91,20 @@ void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct 
 	int octoleg_len = octoblock_len / 8;
 	long bytes_to_read = file_size;
 
-
+	char octoblock_seqnum = 0;
 	// make sure the size of the octoleg is at least 8 bytes
 	while (octoleg_len >= MIN_LEG_BYTE) {
         printf("octoleg_len: %d\n", octoleg_len);
 
 		// keep sending octolegs until remaining bytes of file to send are less than octoleg
 		while (bytes_to_read >= octoblock_len) {
-			bytes_sent = send_octolegs(file, a_socket, octoleg_len, 8, client, len);
-			printf("bytes_sent = %d\n", bytes_sent);
+			bytes_sent = send_octolegs(file, octoblock_seqnum, octoleg_len, 8, a_socket, client, len);
 
 			// decrease bytes_to_read by how many bytes were sent
 			bytes_to_read -= bytes_sent;	
 			printf("bytes to read = %ld\n", bytes_to_read);
-
+			octoblock_seqnum = (octoblock_seqnum + 1) % OCTOBLOCK_MAX_SEQNUM;
+			printf("octoblock seqnum = %d\n", octoblock_seqnum);
 		}
 
 
@@ -118,7 +117,7 @@ void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct 
 	octoleg_len = sizeof(char);
 	if (bytes_to_read > 0) {	
 		printf("leftover bytes to read: %ld\n", bytes_to_read);		
-		bytes_sent = send_octolegs(file, a_socket, octoleg_len, bytes_to_read, client, len);
+		bytes_sent = send_octolegs(file, octoblock_seqnum, octoleg_len, bytes_to_read, a_socket, client, len);
 
 	}
 	
