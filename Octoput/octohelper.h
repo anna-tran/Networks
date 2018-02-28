@@ -23,13 +23,16 @@
 
 
 
-#define SERVER_PORT 4545
-#define MAX_OCTOBLOCK_LEN 8888
-#define MIN_LEG_BYTE 8
-#define TIMEOUT 1
-#define OCTOBLOCK_MAX_SEQNUM 3
-#define TIMED_WAIT 10
+#define SERVER_PORT 4545            // socket port to connect to server
+#define SERVER_ADDR "localhost"     // address the server is running on
+#define MAX_OCTOBLOCK_LEN 8888      // maximum size of an octoblock
+#define MIN_LEG_BYTE 8              // minimum size of an octoleg
+#define OCTOBLOCK_MAX_SEQNUM 3      // modulo for restarting octoblock sequence numbers
+#define TIMEOUT 1                   // timeout for concurrent sending is 1s 
+#define TIMED_WAIT 10               // timeout before closing a socket
+#define PERCENT_THROWAWAY 10        // percentage of how many packets to discard
 
+// struct to contain arguements for receiving data from client
 struct pthread_recv_args {
 	char* recv_buf;
 	size_t size_of_recv;
@@ -42,11 +45,15 @@ struct pthread_recv_args {
 	int* bytes_recv;
 };
 
+// struct to contain arguments to detect timeout
 struct pthread_timeout_args {
     int timeout_len;
     bool* timed_out;
 };
 
+/*
+    Create a TCP socket
+*/
 int setup_tcp_socket() {
     int a_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (a_socket == -1) {
@@ -57,7 +64,9 @@ int setup_tcp_socket() {
     return a_socket;
 }
 
-
+/*
+    Create a UDP socket
+*/
 int setup_udp_socket() {
 	// create socket
 	int a_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -69,6 +78,9 @@ int setup_udp_socket() {
 	return a_socket;
 }
 
+/*
+    Bind a socket to a port and address
+*/
 void bind_socket(int a_socket, sockaddr_in *address) {
 	// bind socket to PORT
 	int status = bind(a_socket, (struct sockaddr*) address, sizeof(struct sockaddr_in));
@@ -79,6 +91,9 @@ void bind_socket(int a_socket, sockaddr_in *address) {
 	}
 }
 
+/*
+    Send a TCP message, exit on failure
+*/
 void send_tcp_msg(int a_socket, const char* msg) {
     ssize_t c_send_status;
     c_send_status = send(a_socket, msg, strlen(msg), 0);
@@ -88,6 +103,9 @@ void send_tcp_msg(int a_socket, const char* msg) {
     }
 }
 
+/*
+    Receive a TCP message, exit on failure
+*/
 ssize_t recv_tcp_msg(int a_socket, char* msg, ssize_t size_msg) {
     // clear buffer first
     memset(msg,0,size_msg);
@@ -102,7 +120,9 @@ ssize_t recv_tcp_msg(int a_socket, char* msg, ssize_t size_msg) {
 
 }
 
-
+/*
+    Send a UDP message, exit on failure
+*/
 int send_udp_msg(int a_socket, char* msg, size_t msg_len, struct sockaddr *addr, unsigned int len) {
 	int sent_bytes = sendto(a_socket, msg, msg_len, 0, addr, sizeof(struct sockaddr_in));
 	if (sent_bytes < 0) {
@@ -113,17 +133,23 @@ int send_udp_msg(int a_socket, char* msg, size_t msg_len, struct sockaddr *addr,
 	return sent_bytes;
 }
 
+/*
+    Receive a UDP message, exit on failure
+*/
 int recv_udp_msg(int a_socket, char* buf, size_t buf_len, struct sockaddr *addr, unsigned int len) {
     int read_bytes = recvfrom(a_socket, buf, buf_len, 0, addr, &len);
     if (read_bytes < 0) {
         perror("Recv error");
-        printf("$d\n",errno);
         close(a_socket);        
         exit(-1);
     } 	
     return read_bytes;
 }
 
+
+/*
+    Get the highest octoleg sequence number from an ACK
+*/
 int get_highest_seqnum(unsigned char ack) {
     int seqnum = 0;
     while (ack & (1 << (seqnum))) {
@@ -136,6 +162,9 @@ int get_highest_seqnum(unsigned char ack) {
     }
 }
 
+/*
+    For debugging. Print out the ACK string backwards starting with LSB ending with MSB
+*/
 void print_ack(unsigned char ack) {
     char ack_str[9];
     memset(ack_str,0,9);
@@ -149,7 +178,10 @@ void print_ack(unsigned char ack) {
     printf("ack is %s", ack_str);
 }
 
-
+/*
+    Check the thread result to ensure it was successfully created.
+    Exit program otherwise.
+*/
 void check_pthread_ok(int pthread_result, int a_socket) {
 	if (pthread_result) {
 			perror("Error creating pthread");
@@ -158,6 +190,9 @@ void check_pthread_ok(int pthread_result, int a_socket) {
 	}
 }
 
+/*
+    Function in which the thread waits for a duration of time before timing out, setting the timeout flag and exiting.
+*/
 void* pthread_wait_timeout(void *void_timeout_args) {
     struct pthread_timeout_args* timeout_args = (struct pthread_timeout_args*) void_timeout_args;
 	sleep(timeout_args->timeout_len);
@@ -165,13 +200,19 @@ void* pthread_wait_timeout(void *void_timeout_args) {
     pthread_exit(0);
 }
 
+/*
+    Function in which the thread waits for a message incoming on a socket
+*/
 void* pthread_recv_bytes(void* void_recv_args) {
 	struct pthread_recv_args* args = (struct pthread_recv_args*) void_recv_args;
 	*(args->bytes_recv) = recv_udp_msg(args->a_socket, args->recv_buf, args->size_of_recv, args->client, args->size_of_client);
 	pthread_exit(0);
 }
 
-
+/*
+    Send a message and wait for a response.
+    If the timeout happens before a response is obtained, restart the timeout, resend the message and wait again.
+*/
 int do_concurrent_send(char* send_buf, size_t size_of_send, 
 						char* recv_buf, size_t size_of_recv,
 						int a_socket, struct sockaddr *client, unsigned int len) {
@@ -191,39 +232,42 @@ int do_concurrent_send(char* send_buf, size_t size_of_send,
 	recv_args.bytes_recv = &bytes_recv;
 
 
+    // keep looping until the timeout has not been reached, implying that a message has been received
 	while (timed_out){
 		timed_out = false;
 
 		pthread_t thread1;
 		check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timeout_args), a_socket);
 
+        // send the message and wait for a response
 		bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
 
 		pthread_t thread2;
 		check_pthread_ok(pthread_create(&thread2, NULL, pthread_recv_bytes, (void*) &recv_args), a_socket);
 
-        // parent process
         while (!timed_out) {
         	// if received something, kill the timer process
             if (bytes_recv > 0) {
                 pthread_cancel(thread1);
-                //printf("bytes_recv %d\n", bytes_recv);
                 break;
             }
         }
-        // timed out
-        // kill receiving process and try again
+        // timed out so kill receiving process and try again
         if (timed_out) {
         	pthread_cancel(thread2);
-        	printf("resending octoleg\n");
+            printf("resending octoleg\n");
         }
 
 		
 	}
-	//printf("bytes_sent on concurrent send: %d\n", bytes_sent);
 	return bytes_sent;
 }
 
+
+/*
+    When client has received all of the requested data, wait a duration of time before closing the socket
+    to ensure that the server has received the last ACK. If not, resend the ACK and reset the timeout.
+*/
 void do_timed_wait(char* send_buf, size_t size_of_send, 
                     char* recv_buf, size_t size_of_recv,
                     int a_socket, struct sockaddr *client, unsigned int len) {
@@ -250,7 +294,8 @@ void do_timed_wait(char* send_buf, size_t size_of_send,
         check_pthread_ok(pthread_create(&thread2, NULL, pthread_recv_bytes, (void*) &recv_args), a_socket);
         while (!timed_out) {
             
-            // if received something, kill the timer process
+            // if a message was received, then the server doesn't know that the client has all the requested
+            // data so send the FIN ACK again
             if (bytes_recv > 0) {
                 bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
                 pthread_cancel(thread1);

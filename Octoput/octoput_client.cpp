@@ -10,6 +10,9 @@
 int server_socket;
 FILE* file;
 
+/*
+    Set the port and family for the address struct
+*/
 void set_port_and_family(struct sockaddr_in* addr) {
     memset ((char*) &(*addr),0,sizeof((*addr)));
     addr->sin_family = AF_INET;
@@ -17,6 +20,9 @@ void set_port_and_family(struct sockaddr_in* addr) {
 }
 
 
+/*
+    Get the octoleg sequence number from a byte
+*/
 int get_seqnum(unsigned char identifier) {
     int seqnum = 0;
     while ((identifier & (1 << seqnum)) == 0x00) {
@@ -27,35 +33,37 @@ int get_seqnum(unsigned char identifier) {
 
 
 
-
-
+/*
+    Receive the octolegs from the server and reassemble them into an octoblock
+*/
 void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char* init_octoleg, int a_socket, struct sockaddr *server, unsigned int len) {
     int bytes_sent = 0;
     int bytes_recv = 0;
 
-    // add another bit to contain the sequence number
+    // extra byte to contain the sequence number of the octoblock
+    // extra byte to contain the sequence number of the octoleg
     char octolegs[8][octoleg_len+2];
     char buf[octoleg_len+2];
     struct sockaddr_in* ip_server;
     ip_server = (struct sockaddr_in*) server;    
 
-    // loop until all segments of message have been received
     unsigned char ack = 0;
 
+    // init_octoleg contains some data from the expected octoblock
+    // initialize the octoleg array with this value
     char identifier = init_octoleg[1];
     int seqnum = get_seqnum(identifier);
 
     memcpy(octolegs[seqnum],init_octoleg,octoleg_len+2);
     ack = ack | identifier;
 
+    // loop until all segments of message have been received
     while ((ack & 0xFF) != 0xFF) {
-        // wait for server response
         memset (&buf,0,sizeof(buf));
-        
         bytes_recv = recv_udp_msg(a_socket, buf, sizeof(buf), server, len);
-        //printf("bytes_recv = %d\n", bytes_recv);
-        if ((rand() % 100) < 10)
-           continue;
+        // throw away 10% of packets
+        if ((rand() % 100) < PERCENT_THROWAWAY)
+          continue;
 
         identifier = buf[1];
         seqnum = get_seqnum(identifier);
@@ -67,11 +75,8 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
             ack = ack | identifier;
         }
 
-        // send cumulative ACK         
+        // send current cumulative ACK         
         int highest_seqnum = get_highest_seqnum(ack);
-        //printf("sending highest_seqnum  %d   ", highest_seqnum);
-        //print_ack(ack);
-        //printf("\n");
         char highest_seqnum_ack = 1 << highest_seqnum;
         bytes_sent = send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
   
@@ -83,21 +88,21 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
         char* next_location = octoblock + (i * octoleg_len);
         memcpy(next_location, &(octolegs[i][2]), octoleg_len);
     }
-    //printf("finished memcpy\n");
 }
 
-void assure_octoblock_ack_sent(char octoblock_seqnum, int octoleg_len, char* init_octoleg, int a_socket, struct sockaddr *server, unsigned int len) {
+/*
+    Assure that the ACK from the last octoleg is sent to the server by checking if the octoblock sequence number
+    has moved up to the next expected value
+*/
+void assure_octoblock_ack_sent(char octoblock_seqnum, int octoleg_len, char* init_octoleg, 
+                                int a_socket, struct sockaddr *server, unsigned int len) {
     char highest_seqnum_ack = 1 << 7;
     char lowest_ack = 1;
-
-    printf("-----\n");
-    printf("octoleg_len = %d\n", octoleg_len);
-    printf("octoblock seqnum = %u\n", octoblock_seqnum);
-    printf("-----\n");
 
     memset(init_octoleg,0,sizeof(*init_octoleg));
     recv_udp_msg(a_socket, init_octoleg, octoleg_len+2, server, len);
     // while the next octoleg is not part of the next octoblock to be sent
+    // save the data from the next octoblock in init_octoleg
     while (init_octoleg[0] != ((octoblock_seqnum + 1) % OCTOBLOCK_MAX_SEQNUM)) {
         send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
         recv_udp_msg(a_socket, init_octoleg, octoleg_len+2, server, len);
@@ -107,29 +112,38 @@ void assure_octoblock_ack_sent(char octoblock_seqnum, int octoleg_len, char* ini
 }
 
 
-
+/*
+    Send the first message to the server so that the server has client udp info
+*/
 
 void send_start_ack(char* init_octoleg, int octoleg_len, int a_socket, struct sockaddr *server, unsigned int len) {
 
-    // send first ack to server so server has client udp info    
+    // send first ack to server so server has client udp info 
+    // save the response to be included in the first octoblock   
     char start_ack = 1;
-
     do_concurrent_send(&start_ack, sizeof(start_ack), 
                         init_octoleg, sizeof(init_octoleg),
                         a_socket, server, len);
 }
 
+/*
+    Receive complete and partial octoblocks from the server and write them to the file given the file descriptor
+*/
 void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *server, unsigned int len) {
     int bytes_written;
     int octoblock_len = MAX_OCTOBLOCK_LEN;    
     int octoleg_len = octoblock_len/8;
     long bytes_to_write = file_size;
 
+    // first octoleg received after start ACK is sent
     char init_octoleg[octoleg_len+2];
     memset(init_octoleg,0,sizeof(init_octoleg));
     send_start_ack(init_octoleg, octoleg_len, a_socket, server, len);
 
+    // octoblock sequence number (between 0 and OCTOBLOCK_MAX_SEQNUM) to tell when the client has received all 
+    // octolegs of one octoblock and is ready to move to the next octoblock
     char octoblock_seqnum = 0;
+
     // make sure the size of the octoleg is at least 8 bytes
     while (octoleg_len >= MIN_LEG_BYTE) {
         printf("octoleg_len: %d\n", octoleg_len);
@@ -139,9 +153,7 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
             memset(octoblock,0,sizeof(octoblock));
             recv_octolegs(octoblock, octoblock_seqnum, octoleg_len, init_octoleg, a_socket, server, len);
 
-            //printf("size of octoblock: %ld\n", sizeof(octoblock));
             bytes_written = fwrite(octoblock,sizeof(char),sizeof(octoblock),file);
-            printf("bytes_written = %d\n", bytes_written);
             fflush(file);
             bytes_to_write -= bytes_written;
             printf("bytes_to_write = %ld\n", bytes_to_write);
@@ -175,11 +187,15 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
     char highest_seqnum_ack = 1 << 7;
     char recv_byte;
 
+    // do a timed wait in case the server didn't get the ACK for the last octoblock, so client resends the ACK
     do_timed_wait(&highest_seqnum_ack, sizeof(highest_seqnum_ack), 
                     &recv_byte, sizeof(recv_byte),
                     a_socket, server, len);    
 }
 
+/*
+    Closes the open sockets and file descriptors and exits the program
+*/
 void my_handler(int s){
     close(server_socket);
     fclose(file);
@@ -190,13 +206,13 @@ void my_handler(int s){
 int main(int argc, char* argv[]){
 
     // set up safe exit on CTRL-C
-    struct sigaction sigIntHandler;
+    struct sigaction sig_int_handler;
 
-    sigIntHandler.sa_handler = my_handler;
-    sigemptyset(&sigIntHandler.sa_mask);
-    sigIntHandler.sa_flags = 0;
+    sig_int_handler.sa_handler = my_handler;
+    sigemptyset(&sig_int_handler.sa_mask);
+    sig_int_handler.sa_flags = 0;
 
-    sigaction(SIGINT, &sigIntHandler, NULL);
+    sigaction(SIGINT, &sig_int_handler, NULL);
 
     // check for supplied file name
     if (argc != 2 ) {
@@ -239,15 +255,6 @@ int main(int argc, char* argv[]){
 
 
 
-
-
-
-
-
-
-
-
-
     const char* truncated_file_name;
     std::string file_name_str = file_name;
     ssize_t last_slash_index;    
@@ -259,11 +266,11 @@ int main(int argc, char* argv[]){
     }
 
     printf("file name is %s\n", truncated_file_name);
-    const char* server_name = "localhost";
+    const char* server_name = SERVER_ADDR;
     inet_pton(AF_INET, server_name, &ip_server.sin_addr);
     server = (struct sockaddr*) &ip_server;
 
-    // setup server socket
+    // setup UDP socket
     server_socket = setup_udp_socket();
 
 
@@ -278,7 +285,6 @@ int main(int argc, char* argv[]){
         close(server_socket);
         exit(-1);
     }
-    // send_start_ack(server_socket, server, len);
 
     printf("Receiving from server %s on port %d \n", inet_ntoa(ip_server.sin_addr), ntohs(ip_server.sin_port));
 
