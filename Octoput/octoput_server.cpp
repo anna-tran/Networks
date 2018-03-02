@@ -63,8 +63,10 @@ int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_re
 	unsigned char ack = 0;
 	unsigned char finished_ack = 1 << 7;
 
+	printf("----- Start sending octolegs -----\n");
 	// send (possibly duplicate) octolegs in random order
 	int i = rand() % 8;
+	// int i = 0;
 	while (ack != finished_ack) {
 		printf("sending seqnum %d\n", i);
 		bytes_recv = 0;
@@ -73,8 +75,10 @@ int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_re
 		bytes_sent = do_concurrent_send(octolegs[i], sizeof(octolegs[i]), &higest_client_seq, sizeof(higest_client_seq), a_socket, client, len);
 		ack = (unsigned char) higest_client_seq;
 
+		// i++;
 		i = rand() % 8;
 	}
+	printf("----- Finished sending octolegs -----\n\n");
 
 
 	return (bytes_sent-2)*8;
@@ -169,8 +173,10 @@ int main(int argc, char* argv[]){
 	server = (struct sockaddr*) &ip_server;
 	client = (struct sockaddr*) &ip_client;
 
+
 	server_socket = setup_tcp_socket();
 	bind_socket(server_socket,&ip_server);
+
 
 	// listen for a connection
     status = listen(server_socket,5); // queuelen of 5
@@ -183,7 +189,7 @@ int main(int argc, char* argv[]){
     int client_sock;
     client_sock = accept(server_socket, NULL, NULL);
     if (client_sock < 0) {
-        printf("Error in accept()\n");
+        perror("Error in accept()");
         exit(-1);
     }
 
@@ -227,16 +233,16 @@ int main(int argc, char* argv[]){
 	server_socket = setup_udp_socket();
 	bind_socket(server_socket,&server_address);
 
-	wait_for_client(server_socket,client,len);
-	printf("server %s on port %d\n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));		
-	printf("client %s on port %d\n", inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
+		wait_for_client(server_socket,client,len);
+		printf("**** Starting file transfer ****\n");
+		printf("Server %s on port %d\n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));		
+		printf("Client %s on port %d\n", inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
 
-	send_octoblocks(file, file_size, buf, server_socket, client, len);
-	
-	fclose(file);
+		send_octoblocks(file, file_size, buf, server_socket, client, len);
+		
+		fclose(file);
+		printf("**** Finished file transfer ****\n");
 	close(server_socket);
-
-
 	return 0;
 
 

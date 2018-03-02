@@ -61,18 +61,23 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
     memcpy(octolegs[seqnum],init_octoleg,octoleg_len+2);
     ack = ack | identifier;
 
+    printf("----- Start receiving octolegs -----\n");
     // loop until all segments of message have been received
     while ((ack & 0xFF) != 0xFF) {
         memset (&buf,0,sizeof(buf));
         bytes_recv = recv_udp_msg(a_socket, buf, sizeof(buf), server, len);
         // throw away 10% of packets
-        if ((rand() % 100) < PERCENT_THROWAWAY)
-          continue;
+        
 
         identifier = buf[1];
         seqnum = get_seqnum(identifier);
 
-        printf("got seqnum %d\n", seqnum);
+        
+        if ((rand() % 100) < PERCENT_THROWAWAY) {
+            printf("discarding octoleg %d\n", seqnum);
+            continue;
+        }
+        printf("got seqnum %d\t", seqnum);
         // copy over contents of buffer only if the response message hadn't been received yet
         if (ack != (ack | identifier)) {
             memcpy((octolegs[seqnum]),buf,sizeof(buf));
@@ -82,9 +87,12 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
         // send current cumulative ACK         
         int highest_seqnum = get_highest_seqnum(ack);
         char highest_seqnum_ack = 1 << highest_seqnum;
+        printf("have all octolegs upto seqnum: %d\n", highest_seqnum);
         bytes_sent = send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
   
     }
+
+    printf("----- Finished receiving octolegs -----\n\n");
 
     // assemble octolegs into octoblock
     memcpy(octoblock, &(octolegs[0][2]), octoleg_len);

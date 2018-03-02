@@ -287,7 +287,7 @@ void do_timed_wait(char* send_buf, size_t size_of_send,
     bool timed_out = false;
 
     struct pthread_timeout_args timeout_args;
-    timeout_args.timeout_len = TIMED_WAIT;              // wait 30s before exiting read call
+    timeout_args.timeout_len = TIMED_WAIT;              // wait a duration of time before exiting read call
     timeout_args.timed_out = &timed_out;
     struct pthread_recv_args recv_args;
     recv_args.recv_buf = recv_buf;
@@ -298,6 +298,7 @@ void do_timed_wait(char* send_buf, size_t size_of_send,
     recv_args.bytes_recv = &bytes_recv;
 
     while (!timed_out) {
+        printf("Waiting %ds for any late messages\n", TIMED_WAIT);
         pthread_t thread1;
         check_pthread_ok(pthread_create(&thread1, NULL, pthread_wait_timeout, (void*) &timeout_args), a_socket);
 
@@ -310,6 +311,7 @@ void do_timed_wait(char* send_buf, size_t size_of_send,
             if (bytes_recv > 0) {
                 bytes_sent = send_udp_msg(a_socket, send_buf, size_of_send, client, len);
                 pthread_cancel(thread1);
+                printf("Received a late message of %d bytes\n", bytes_recv);
                 break;
             }
         }

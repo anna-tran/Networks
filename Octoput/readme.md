@@ -17,6 +17,8 @@ To compile and run the client program:
 	> g++ octoput_client.cpp -o client
 	> ./client <requested_file_name>
 
+The client program will write the requested file in the the current directory as "new_<requested_file_name>".
+
 ## Configuration
 The default configuration values for the address and port of the server is 'localhost:4545'.
 To change the address and port of the server, modify the SERVER_PORT and SERVER_ADDR values in octohelper.h.
