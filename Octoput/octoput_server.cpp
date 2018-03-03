@@ -9,7 +9,8 @@
 #include <ctime>
 #include "octohelper.h"
 
-int server_socket;
+int tcp_server_socket;
+int udp_server_socket;
 FILE* file;
 
 
@@ -31,7 +32,8 @@ void set_port_family_addr(struct sockaddr_in* addr) {
 long get_file_size(FILE* file) {
 	fseek(file,0,SEEK_END);
 	long file_size = ftell(file);
-	rewind(file);	
+	fseek(file, 0, SEEK_SET);
+	//rewind(file);	
 	return file_size;
 }
 
@@ -40,6 +42,7 @@ long get_file_size(FILE* file) {
 	Read octoblock length bytes, stored at 8 octolegs, from the file and send the data to the client
 */
 int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_reads, int a_socket, struct sockaddr *client, unsigned int len) {
+	printf("looking at octoblock seqnum: %d\n", octoblock_seqnum);
 
     // extra byte to contain the sequence number of the octoblock
     // extra byte to contain the sequence number of the octoleg
@@ -51,7 +54,7 @@ int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_re
 		octolegs[i][0] = octoblock_seqnum;
 		octolegs[i][1] = 1 << i;
 		if (i < num_reads) {
-			fread(&(octolegs[i][2]),sizeof(char),octoleg_len,file);			
+			ssize_t read_bytes = fread(&(octolegs[i][2]),sizeof(char),octoleg_len,file);
 		}
 	}
 
@@ -66,16 +69,23 @@ int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_re
 	printf("----- Start sending octolegs -----\n");
 	// send (possibly duplicate) octolegs in random order
 	int i = rand() % 8;
-	// int i = 0;
+
+	/** UNCOMMENT TO SEND SEQUENTIALLY
+	int i = 0;
+	**/
 	while (ack != finished_ack) {
-		printf("sending seqnum %d\n", i);
+		printf("sending seqnum %d \t", i);
 		bytes_recv = 0;
 		char higest_client_seq;		// highest seqnum received on client side
 
 		bytes_sent = do_concurrent_send(octolegs[i], sizeof(octolegs[i]), &higest_client_seq, sizeof(higest_client_seq), a_socket, client, len);
+		printf("sent %d bytes\n", bytes_sent);
 		ack = (unsigned char) higest_client_seq;
 
-		// i++;
+		/** UNCOMMENT TO SEND SEQUENTIALLY
+		i++;
+		i %= 8;
+		 **/
 		i = rand() % 8;
 	}
 	printf("----- Finished sending octolegs -----\n\n");
@@ -88,7 +98,7 @@ int send_octolegs(FILE* file, char octoblock_seqnum, int octoleg_len, int num_re
 /*
 	Read an array of data from the file and send the data in octoblocks to the client
 */
-void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct sockaddr *client, unsigned int len) {
+void send_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *client, unsigned int len) {
 	int bytes_sent, bytes_recv;
 	int octoblock_len = MAX_OCTOBLOCK_LEN;
 	int octoleg_len = octoblock_len / 8;
@@ -117,7 +127,7 @@ void send_octoblocks(FILE* file, long file_size, char* buf,int a_socket, struct 
 		octoblock_len = bytes_to_read;
 		octoleg_len = (octoblock_len / 8);
 	}
-
+	printf("octoleg_len: %d\n", octoleg_len);
 	// send the remaining bytes in a padded buffer of 8 bytes
 	octoleg_len = sizeof(char);
 	if (bytes_to_read > 0) {	
@@ -143,8 +153,11 @@ void wait_for_client(int a_socket, struct sockaddr *client, unsigned int len) {
     Closes the open sockets and file descriptors and exits the program
 */
 void my_handler(int s){
-    close(server_socket);
-    printf("%s\n", "Closed client socket");
+    close(tcp_server_socket);
+    close(udp_server_socket);
+    fseek(file,0,SEEK_SET);
+    fclose(file);
+    printf("%s\n", "Closed TCP and UDP sockets, and open file descriptors");
     exit(0);
 }
 
@@ -164,8 +177,7 @@ int main(int argc, char* argv[]){
 	int status;
 	struct sockaddr_in ip_server, ip_client;
 	struct sockaddr *server, *client;
-	unsigned int len = sizeof(ip_server);
-	char buf[MAX_OCTOBLOCK_LEN];
+    
 
 	// Setup TCP socket to receive file name and send file size
 	set_port_family_addr(&ip_server);
@@ -174,75 +186,87 @@ int main(int argc, char* argv[]){
 	client = (struct sockaddr*) &ip_client;
 
 
-	server_socket = setup_tcp_socket();
-	bind_socket(server_socket,&ip_server);
+	tcp_server_socket = setup_tcp_socket();
+	bind_socket(tcp_server_socket,&ip_server);
 
 
 	// listen for a connection
-    status = listen(server_socket,5); // queuelen of 5
+    status = listen(tcp_server_socket,5); // queuelen of 5
     if (status == -1) {
         perror("listen() call failed\n");
         exit(-1);
     }
 
-    // accept a connection
-    int client_sock;
-    client_sock = accept(server_socket, NULL, NULL);
-    if (client_sock < 0) {
-        perror("Error in accept()");
-        exit(-1);
-    }
+    while(1) {
+	    // accept a TCP connection
+	    int client_sock;
+	    client_sock = accept(tcp_server_socket, NULL, NULL);
+	    if (client_sock < 0) {
+	        perror("Error in accept()");
+	        exit(-1);
+	    }
+	    printf("\nConnected to a new client\n");
 
-	long file_size;
-	size_t result;
+		long file_size;
+		size_t result;
 
-	// get file name from client
-	memset(buf,0,sizeof(buf));	
-	int read_bytes = recv_tcp_msg(client_sock, buf, MAX_OCTOBLOCK_LEN);	
-    buf[read_bytes] = '\0';
-	printf("Server received file name \"%s\" from client %s on port %d\n", 
-		buf, inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
+		// get file name from client
+		char buf[MAX_OCTOBLOCK_LEN];
+		memset(buf,0,sizeof(buf));	
+		int read_bytes = recv_tcp_msg(client_sock, buf, MAX_OCTOBLOCK_LEN);	
+	    buf[read_bytes] = '\0';
+		printf("Server received file name \"%s\" from client %s on port %d\n", 
+			buf, inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
+
+		file = 0;
+		// open file if existing, else exit the program
+		file = fopen(buf,"rb");
+		if (file == NULL) {
+			close(tcp_server_socket);
+			return 0;
+		}
 
 
-	// open file if existing, else exit the program
-	file = fopen(buf,"rb");
-	if (file == NULL) {
-		close(server_socket);
-		return 0;
+		// get file size
+		file_size = get_file_size(file);
+	    printf("File size %ld\n", file_size);
+
+
+		memset(buf,0,sizeof(buf));
+		sprintf(buf,"%ld",file_size);
+		send_tcp_msg(client_sock, buf);
+		close(client_sock);
+
+		// setup UDP socket
+	    struct sockaddr_in server_address, client_address;
+		struct sockaddr *udp_client;
+		unsigned int len = sizeof(server_address);
+
+		udp_client = (struct sockaddr*) &client_address;
+
+	    set_port_family_addr(&server_address);
+
+		udp_server_socket = setup_udp_socket();
+		bind_socket(udp_server_socket,&server_address);
+
+		wait_for_client(udp_server_socket,udp_client,len);
+		printf("\n**** Starting file transfer ****\n");
+		printf("Server %s on port %d\n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));		
+		printf("Client %s on port %d\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));		
+
+		send_octoblocks(file, file_size, udp_server_socket, udp_client, len);
+		
+		int close_status = fclose(file);
+		if (close_status) {
+			perror("Could not close file");
+			close(udp_server_socket);
+			close(tcp_server_socket);
+			exit(-1);
+		}
+		printf("**** Finished file transfer ****\n");
+		close(udp_server_socket);
 	}
 
-
-	// get file size
-	file_size = get_file_size(file);
-    printf("File size %ld\n", file_size);
-
-
-	memset(buf,0,sizeof(buf));
-	sprintf(buf,"%ld",file_size);
-	send_tcp_msg(client_sock, buf);
-
-	// close TCP socket and open UDP socket
-	close(server_socket);
-
-
-	// setup UDP socket
-    struct sockaddr_in server_address;
-    memset(&server_address, 0, sizeof(server_address));
-    set_port_family_addr(&server_address);
-
-	server_socket = setup_udp_socket();
-	bind_socket(server_socket,&server_address);
-
-		wait_for_client(server_socket,client,len);
-		printf("**** Starting file transfer ****\n");
-		printf("Server %s on port %d\n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));		
-		printf("Client %s on port %d\n", inet_ntoa(ip_client.sin_addr), ntohs(ip_client.sin_port));		
-
-		send_octoblocks(file, file_size, buf, server_socket, client, len);
-		
-		fclose(file);
-		printf("**** Finished file transfer ****\n");
-	close(server_socket);
 	return 0;
 
 

@@ -37,10 +37,10 @@
 #define SERVER_PORT 4545            // socket port to connect to server
 #define SERVER_ADDR "localhost"     // address the server is running on
 #define MAX_OCTOBLOCK_LEN 8888      // maximum size of an octoblock
-#define MIN_LEG_BYTE 8              // minimum size of an octoleg
-#define OCTOBLOCK_MAX_SEQNUM 3      // modulo for restarting octoblock sequence numbers
+#define MIN_LEG_BYTE 1              // minimum size of an octoleg
+#define OCTOBLOCK_MAX_SEQNUM 20      // modulo for restarting octoblock sequence numbers
 #define TIMEOUT 1                   // timeout for concurrent sending is 1s 
-#define TIMED_WAIT 10               // timeout before closing a socket
+#define TIMED_WAIT 5               // timeout before closing a socket
 #define PERCENT_THROWAWAY 10        // percentage of how many packets to discard
 
 // struct to contain arguements for receiving data from client
@@ -110,6 +110,7 @@ void send_tcp_msg(int a_socket, const char* msg) {
     c_send_status = send(a_socket, msg, strlen(msg), 0);
     if (c_send_status < 0) {
         perror("Error in send() call");
+        close(a_socket);
         exit(-1);
     }
 }
@@ -125,6 +126,7 @@ ssize_t recv_tcp_msg(int a_socket, char* msg, ssize_t size_msg) {
     bytes_rcv = recv(a_socket, &(*msg), size_msg, 0);
     if (bytes_rcv < 0) {
         perror("Error in receiving");
+        close(a_socket);
         exit(-1);
     }
     return bytes_rcv;

@@ -40,7 +40,8 @@ int get_seqnum(unsigned char identifier) {
 /*
     Receive the octolegs from the server and reassemble them into an octoblock
 */
-void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char* init_octoleg, int a_socket, struct sockaddr *server, unsigned int len) {
+void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, int a_socket, struct sockaddr *server, unsigned int len) {
+    printf("looking at octoblock seqnum: %d\n", octoblock_seqnum);
     int bytes_sent = 0;
     int bytes_recv = 0;
 
@@ -53,13 +54,8 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
 
     unsigned char ack = 0;
 
-    // init_octoleg contains some data from the expected octoblock
-    // initialize the octoleg array with this value
-    char identifier = init_octoleg[1];
-    int seqnum = get_seqnum(identifier);
-
-    memcpy(octolegs[seqnum],init_octoleg,octoleg_len+2);
-    ack = ack | identifier;
+    char identifier;
+    int seqnum;
 
     printf("----- Start receiving octolegs -----\n");
     // loop until all segments of message have been received
@@ -80,6 +76,7 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
         printf("got seqnum %d\t", seqnum);
         // copy over contents of buffer only if the response message hadn't been received yet
         if (ack != (ack | identifier)) {
+
             memcpy((octolegs[seqnum]),buf,sizeof(buf));
             ack = ack | identifier;
         }
@@ -87,7 +84,9 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
         // send current cumulative ACK         
         int highest_seqnum = get_highest_seqnum(ack);
         char highest_seqnum_ack = 1 << highest_seqnum;
-        printf("have all octolegs upto seqnum: %d\n", highest_seqnum);
+        print_ack(ack);
+        printf("\n");
+        // printf("have all octolegs upto seqnum: %d\n", highest_seqnum);
         bytes_sent = send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
   
     }
@@ -95,8 +94,7 @@ void recv_octolegs(char* octoblock, char octoblock_seqnum, int octoleg_len, char
     printf("----- Finished receiving octolegs -----\n\n");
 
     // assemble octolegs into octoblock
-    memcpy(octoblock, &(octolegs[0][2]), octoleg_len);
-    for (int i = 1; i < 8; i++) {
+    for (int i = 0; i < 8; i++) {
         char* next_location = octoblock + (i * octoleg_len);
         memcpy(next_location, &(octolegs[i][2]), octoleg_len);
     }
@@ -114,7 +112,6 @@ void assure_octoblock_ack_sent(char octoblock_seqnum, int octoleg_len, char* ini
     memset(init_octoleg,0,sizeof(*init_octoleg));
     recv_udp_msg(a_socket, init_octoleg, octoleg_len+2, server, len);
     // while the next octoleg is not part of the next octoblock to be sent
-    // save the data from the next octoblock in init_octoleg
     while (init_octoleg[0] != ((octoblock_seqnum + 1) % OCTOBLOCK_MAX_SEQNUM)) {
         send_udp_msg(a_socket, &highest_seqnum_ack, 1, server, len);
         recv_udp_msg(a_socket, init_octoleg, octoleg_len+2, server, len);
@@ -162,8 +159,9 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
         // keep sending octolegs until remaining bytes of file to send are less than octoleg
         char octoblock[octoleg_len * 8];
         while (bytes_to_write >= octoblock_len) {
+
             memset(octoblock,0,sizeof(octoblock));
-            recv_octolegs(octoblock, octoblock_seqnum, octoleg_len, init_octoleg, a_socket, server, len);
+            recv_octolegs(octoblock, octoblock_seqnum, octoleg_len, a_socket, server, len);
 
             bytes_written = fwrite(octoblock,sizeof(char),sizeof(octoblock),file);
             fflush(file);
@@ -189,7 +187,7 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
         printf("leftover bytes to write: %ld\n", bytes_to_write);
         char octoblock[8];
         memset(octoblock,0,sizeof(octoblock));
-        recv_octolegs(octoblock, octoblock_seqnum, sizeof(char), init_octoleg, a_socket, server, len);
+        recv_octolegs(octoblock, octoblock_seqnum, sizeof(char), a_socket, server, len);
 
         bytes_written = fwrite(octoblock,sizeof(char),bytes_to_write,file);
         bytes_to_write -= bytes_written;
@@ -211,7 +209,7 @@ void recv_octoblocks(FILE* file, long file_size, int a_socket, struct sockaddr *
 void my_handler(int s){
     close(server_socket);
     fclose(file);
-    printf("%s\n", "Closed server socket");
+    printf("%s\n", "Closed server socket and open file descriptors");
     exit(0);
 }
 
@@ -291,7 +289,7 @@ int main(int argc, char* argv[]){
     strcat(new_file_name,truncated_file_name);
     printf("new file name: %s\n", new_file_name);
 
-    file = fopen(new_file_name, "wb+");
+    file = fopen(new_file_name, "wb");
     if (file == NULL) {
         perror("Problem opening file");
         close(server_socket);
