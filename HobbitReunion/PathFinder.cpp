@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string>
 #include <string.h>
 
@@ -22,9 +23,9 @@ using namespace std;
 // SDP	Shortest Distance Path
 // STP	Shortest Time Path
 // FTP	Fewest Trolls Path
-#define ROUTING_ALGORITHM "FTP"
+// #define ROUTING_ALGORITHM "FTP"
 #define DESTINATION 'B'
-
+char ROUTING_ALGORITHM[10];
 /*
 	Route from source to destination, with information on the distance and time to get to the destination
 	including the number of coins and trolls on the way.
@@ -321,30 +322,6 @@ void initDwarfPath(ifstream* homesFile, map<char, DwarfPath>* dwarfPaths) {
 	}
 }
 
-// void initDwarfPath(ifstream* homesFile, map<char, DwarfPath>* dwarfPaths) {
-// 	char line[256];
-// 	int id = 0;
-// 	while (homesFile->getline(line,sizeof(line))) {
-// 		// get dwarf name and home
-// 		char* name = strtok(line," \n");
-// 		char* home = strtok(NULL," \n");
-
-// 		struct DwarfPath dp;
-// 		dp.id = id;
-// 		dp.home = *home;
-// 		strcpy(dp.dwarf,name);
-		
-// 		dp.hops = 0;
-// 		dp.distance = 0;
-// 		dp.time = 0;
-// 		dp.coins = 0;
-// 		dp.trolls = 0;
-
-// 		(*dwarfPaths)[dp.home] = dp;
-
-// 		id++;
-// 	}
-// }
 
 /*
 	Get the full algorithm name from the acronym
@@ -373,7 +350,7 @@ void printHeader() {
 	output.append("Destination is always Bilbo's home at node ");
 	output.push_back(DESTINATION);
 	output.append("\n\nDwarf\tHome\tHops\tDist\tTime\tGold\tTrolls\tPath\n");
-	output.append("-----------------------------------------------------------------\n");
+	output.append("------------------------------------------------------------------------\n");
 	printf("%s", output.c_str());
 }
 
@@ -392,7 +369,7 @@ bool wayToSort(string& i, string& j) {
 */
 void printTotals(int totalHops, int totalDistance, int totalTime, int totalCoins, int totalTrolls, double totalDwarfs) {
 	string output;
-	output.append("-----------------------------------------------------------------\nAVERAGE\t\t");
+	output.append("------------------------------------------------------------------------\nAVERAGE\t\t");
 	appendDouble(&output, totalHops/totalDwarfs);
 	output.push_back('\t');
 	appendDouble(&output, totalDistance/totalDwarfs);
@@ -479,38 +456,67 @@ void printPaths(map<char, DwarfPath>* dwarfPaths) {
 	printTotals(totalHops, totalDistance, totalTime, totalCoins, totalTrolls, (double) numDwarfs);
 }
 
+/*
+    Closes the open sockets and file descriptors and exits the program
+*/
+void my_handler(int s){
+    exit(0);
+}
+
 
 int main(int argc, char** argv) {
+
 	if (argc < 3) {
 		printf("Usage:\n\t ./pathfinder <list of homes> <map>\n");
 		return 0;
 	}
-	// get file names and open the respective files
-	char* homesFileName = argv[1];
-	char* mapFileName = argv[2];
 
-	ifstream homesFile (homesFileName);
-	ifstream mapFile (mapFileName);
 
-	map<char, DwarfPath> dwarfPaths;	
-	vector<vector<Route> > hobbitMap;
+    // set up safe exit on CTRL-C
+    struct sigaction sig_int_handler;
 
-	// get initial map information from files
-	createHobbitMap(&mapFile, &hobbitMap, &dwarfPaths);
-	initDwarfPath(&homesFile, &dwarfPaths);
+    sig_int_handler.sa_handler = my_handler;
+    sigemptyset(&sig_int_handler.sa_mask);
+    sig_int_handler.sa_flags = 0;
 
-	homesFile.close();
-	mapFile.close();
-	for (auto it = dwarfPaths.begin(); it != dwarfPaths.end(); it++) {
-		char home = it->first;
-		if (home != DESTINATION && (strcmp((it->second).dwarf,"") != 0)) {
-			printf("finding path for %s\n", (it->second).dwarf);
-			findShortestPath(&(it->second), DESTINATION, &hobbitMap, &dwarfPaths);
+    sigaction(SIGINT, &sig_int_handler, NULL);
+
+    // ROUTING_ALGORITHM = "FTP";
+    strcpy(ROUTING_ALGORITHM, "FTP");
+	while (true) {
+		memset(ROUTING_ALGORITHM,sizeof(ROUTING_ALGORITHM),0);
+		printf("\nType in one of the following routing algorithms\n> SHP\n> SDP\n> STP\n> FTP\nOr \"QUIT\" to exit the program\n\n> ");
+		scanf("%s",ROUTING_ALGORITHM);
+		if (strcmp(ROUTING_ALGORITHM,"QUIT") == 0) {
+			break;
+		}
+		// get file names and open the respective files
+		char* homesFileName = argv[1];
+		char* mapFileName = argv[2];
+
+		ifstream homesFile (homesFileName);
+		ifstream mapFile (mapFileName);
+
+		map<char, DwarfPath> dwarfPaths;	
+		vector<vector<Route> > hobbitMap;
+
+		// get initial map information from files
+		createHobbitMap(&mapFile, &hobbitMap, &dwarfPaths);
+		initDwarfPath(&homesFile, &dwarfPaths);
+
+		homesFile.close();
+		mapFile.close();
+		for (auto it = dwarfPaths.begin(); it != dwarfPaths.end(); it++) {
+			char home = it->first;
+			if (home != DESTINATION && (strcmp((it->second).dwarf,"") != 0)) {
+				// printf("finding path for %s\n", (it->second).dwarf);
+				findShortestPath(&(it->second), DESTINATION, &hobbitMap, &dwarfPaths);
+			}
+
 		}
 
+		printPaths(&dwarfPaths);
 	}
-
-	printPaths(&dwarfPaths);
 	return 0;
 
 }
