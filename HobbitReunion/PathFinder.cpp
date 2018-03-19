@@ -24,8 +24,9 @@ using namespace std;
 // STP	Shortest Time Path
 // FTP	Fewest Trolls Path
 // #define ROUTING_ALGORITHM "FTP"
-#define DESTINATION 'B'
+// #define DESTINATION 'B'
 char ROUTING_ALGORITHM[10];
+char DESTINATION;
 /*
 	Route from source to destination, with information on the distance and time to get to the destination
 	including the number of coins and trolls on the way.
@@ -311,6 +312,9 @@ void initDwarfPath(ifstream* homesFile, map<char, DwarfPath>* dwarfPaths) {
 		char* name = strtok(line," \n");
 		char* home = strtok(NULL," \n");
 
+		if (strcmp(name,"Bilbo") == 0) {
+			DESTINATION = *home;
+		}
 		struct DwarfPath* dp = &((*dwarfPaths)[*home]);
 		strcpy(dp->dwarf,name);
 		dp->hops = 0;
@@ -380,7 +384,7 @@ void printTotals(int totalHops, int totalDistance, int totalTime, int totalCoins
 	output.push_back('\t');
 	appendDouble(&output, totalTrolls/totalDwarfs);
 
-	printf("%s\n", output.c_str());
+	printf("%s\n\n", output.c_str());
 }
 
 /*
@@ -481,11 +485,15 @@ int main(int argc, char** argv) {
 
     sigaction(SIGINT, &sig_int_handler, NULL);
 
-    // ROUTING_ALGORITHM = "FTP";
-    strcpy(ROUTING_ALGORITHM, "FTP");
+    printf("\nType in one of the following routing algorithms"
+			"\n> SHP\n> SDP\n> STP\n> FTP\n"
+			"Or \"QUIT\" to exit the program\n\n");
+    // default is SHP
+    strcpy(ROUTING_ALGORITHM, "SHP");
 	while (true) {
 		memset(ROUTING_ALGORITHM,sizeof(ROUTING_ALGORITHM),0);
-		printf("\nType in one of the following routing algorithms\n> SHP\n> SDP\n> STP\n> FTP\nOr \"QUIT\" to exit the program\n\n> ");
+		
+		printf("> ");
 		scanf("%s",ROUTING_ALGORITHM);
 		if (strcmp(ROUTING_ALGORITHM,"QUIT") == 0) {
 			break;
